@@ -10,6 +10,10 @@ pub mod driver;
 pub mod encode;
 pub mod options;
 
+pub use connection::OracleConnection;
+pub use driver::OracleDriver;
+pub use options::OracleConnectOptions;
+
 #[derive(Debug, Clone)]
 pub struct OracleColumn {
     pub name: Arc<str>,

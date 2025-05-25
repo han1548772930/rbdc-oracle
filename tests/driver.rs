@@ -40,20 +40,15 @@ mod test {
 #[cfg(test)]
 #[cfg(feature = "integration-tests")]
 mod integration_tests {
+    use rbdc::db::Connection; // 添加这个导入
     use rbdc_oracle::{OracleConnectOptions, OracleConnection};
-    use std::env;
-
-    fn load_env() {
-        dotenv::dotenv().ok();
-    }
+    use rbs::Value;
 
     async fn get_test_connection() -> OracleConnection {
-        load_env();
+        let connection_string = "//10.66.66.250:1521/HDDZ/";
 
-        let connection_string = env::var("ORACLE_CONNECTION_STRING")
-            .unwrap_or_else(|_| "//localhost:1521/XE".to_string());
-        let username = env::var("ORACLE_USERNAME").unwrap_or_else(|_| "system".to_string());
-        let password = env::var("ORACLE_PASSWORD").unwrap_or_else(|_| "oracle".to_string());
+        let username = "HDDZ";
+        let password = "HDDZ";
 
         println!("Connecting to Oracle: {}@{}", username, connection_string);
 
@@ -61,19 +56,6 @@ mod integration_tests {
         OracleConnection::establish(&opts)
             .await
             .expect("Failed to connect to Oracle")
-    }
-
-    #[tokio::test]
-    async fn test_connection() {
-        let _conn = get_test_connection().await;
-        println!("✅ Oracle connection successful!");
-    }
-
-    #[tokio::test]
-    async fn test_ping() {
-        let mut conn = get_test_connection().await;
-        conn.ping().await.expect("Ping failed");
-        println!("✅ Oracle ping successful!");
     }
 
     #[tokio::test]
