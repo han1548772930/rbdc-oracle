@@ -7,6 +7,10 @@ readme = "Readme.md"
 authors = ["chenpengfan<chenpengfan1996@gmail.com>"]
 license = "Apache-2.0"
 
+[features]
+default = []
+integration-tests = []
+
 [dependencies]
 rbs = "4.5.13"
 rbdc = "4.5.33"
