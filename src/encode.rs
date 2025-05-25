@@ -14,7 +14,7 @@ impl Encode for Value {
         let idx = idx + 1; // Oracle 是基于 1 的索引
 
         match self {
-            Value::Ext(t, v) => match t.as_ref() {
+            Value::Ext(t, v) => match t {
                 "Date" => {
                     // 修复：使用 as_string() 而不是 as_str()
                     let date_str = v.as_string().unwrap_or_default();

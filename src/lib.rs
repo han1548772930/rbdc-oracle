@@ -32,6 +32,7 @@ impl MetaData for OracleMetaData {
         format!("{:?}", self.0[i].column_type)
     }
 }
+
 #[derive(Debug)]
 pub struct OracleData {
     pub str: Option<Arc<str>>,  // 使用 Arc<str> 减少内存占用
@@ -39,6 +40,7 @@ pub struct OracleData {
     pub column_type: OracleType,
     pub is_sql_null: bool,
 }
+
 #[derive(Debug)]
 pub struct OracleRow {
     pub columns: Arc<Vec<OracleColumn>>,
@@ -61,6 +63,6 @@ impl OracleRow {
         self.datas
             .get(i)
             .ok_or_else(|| rbdc::Error::from("Index out of bounds"))
-            .and_then(|data| Value::decode(data))
+            .and_then(Value::decode)
     }
 }

@@ -21,7 +21,7 @@ impl ConnectOptions for OracleConnectOptions {
     }
 
     fn set_uri(&mut self, url: &str) -> Result<(), Error> {
-        *self = OracleConnectOptions::from_str(url)?;
+        *self = OracleConnectOptions::from_json(url)?;
         Ok(())
     }
 }
@@ -45,7 +45,7 @@ impl OracleConnectOptions {
         }
     }
 
-    pub fn from_str(s: &str) -> Result<Self, Error> {
+    pub fn from_json(s: &str) -> Result<Self, Error> {
         serde_json::from_str(s).map_err(|e| Error::from(e.to_string()))
     }
 }
