@@ -23,3 +23,4 @@ log="0.4"
 bigdecimal = { version = "0.4.0", features = ["serde"] }
 tokio = {version="1",features=["fs", "net", "rt", "rt-multi-thread", "time", "io-util"]}
 tokio-util = {version="0.7",features=["compat"]}
+url = "2.5.4"

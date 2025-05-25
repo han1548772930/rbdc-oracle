@@ -2,93 +2,134 @@ use bigdecimal::BigDecimal;
 use oracle::sql_type::OracleType;
 use rbdc::{datetime::DateTime, Error};
 use rbs::Value;
-use std::str::FromStr;
+use std::{str::FromStr, sync::OnceLock};
 
 use crate::OracleData;
 
 pub trait Decode {
     fn decode(row: &OracleData) -> Result<Value, Error>;
 }
+// 使用静态常量避免重复分配
+static DECIMAL_EXT: OnceLock<String> = OnceLock::new();
+const MISSING_STRING_VALUE: &str = "Missing string value";
 
 impl Decode for Value {
     fn decode(row: &OracleData) -> Result<Value, Error> {
         if row.is_sql_null {
             return Ok(Value::Null);
         }
+
         match row.column_type {
             OracleType::Number(p, s) => {
-                let value = row.str.as_ref().unwrap().clone();
+                let value = row
+                    .str
+                    .as_ref()
+                    .ok_or_else(|| Error::from(MISSING_STRING_VALUE))?;
+
                 if p == 0 && s == -127 {
-                    // it means number(*)
+                    // number(*) 类型处理
                     let dec =
-                        BigDecimal::from_str(&value).map_err(|e| Error::from(e.to_string()))?;
+                        BigDecimal::from_str(value).map_err(|e| Error::from(e.to_string()))?;
+
                     if dec.is_integer() {
-                        let d = dec.digits();
-                        if 1 <= d && d <= 9 {
-                            let a = value.parse::<i32>()?;
-                            return Ok(Value::I32(a));
-                        } else if 10 <= d && d <= 18 {
-                            let a = value.parse::<i64>()?;
-                            return Ok(Value::I64(a));
-                        }
-                        return Ok(Value::String(dec.to_string()).into_ext("Decimal"));
+                        let digits = dec.digits();
+                        return match digits {
+                            1..=9 => value
+                                .parse::<i32>()
+                                .map(Value::I32)
+                                .map_err(|e| Error::from(e.to_string())),
+                            10..=18 => value
+                                .parse::<i64>()
+                                .map(Value::I64)
+                                .map_err(|e| Error::from(e.to_string())),
+                            _ => {
+                                let decimal_ext = DECIMAL_EXT.get_or_init(|| "Decimal".to_string());
+                                Ok(Value::String(dec.to_string()).into_ext(decimal_ext))
+                            }
+                        };
                     }
-                    return Ok(Value::String(dec.to_string()).into_ext("Decimal"));
+                    let decimal_ext = DECIMAL_EXT.get_or_init(|| "Decimal".to_string());
+                    return Ok(Value::String(dec.to_string()).into_ext(decimal_ext));
                 }
+
                 if s > 0 {
                     let dec =
-                        BigDecimal::from_str(&value).map_err(|e| Error::from(e.to_string()))?;
-                    return Ok(Value::String(dec.to_string()).into_ext("Decimal"));
-                } else if 1 <= p && p <= 9 {
-                    let a = value.parse::<i32>()?;
-                    return Ok(Value::I32(a));
-                } else if 10 <= p && p <= 18 {
-                    let a = value.parse::<i64>()?;
-                    return Ok(Value::I64(a));
+                        BigDecimal::from_str(value).map_err(|e| Error::from(e.to_string()))?;
+                    let decimal_ext = DECIMAL_EXT.get_or_init(|| "Decimal".to_string());
+                    return Ok(Value::String(dec.to_string()).into_ext(decimal_ext));
                 }
-                let dec = BigDecimal::from_str(&value).map_err(|e| Error::from(e.to_string()))?;
-                return Ok(Value::String(dec.to_string()).into_ext("Decimal"));
+
+                // 整数类型处理
+                match p {
+                    1..=9 => value
+                        .parse::<i32>()
+                        .map(Value::I32)
+                        .map_err(|e| Error::from(e.to_string())),
+                    10..=18 => value
+                        .parse::<i64>()
+                        .map(Value::I64)
+                        .map_err(|e| Error::from(e.to_string())),
+                    _ => {
+                        let dec =
+                            BigDecimal::from_str(value).map_err(|e| Error::from(e.to_string()))?;
+                        let decimal_ext = DECIMAL_EXT.get_or_init(|| "Decimal".to_string());
+                        Ok(Value::String(dec.to_string()).into_ext(decimal_ext))
+                    }
+                }
             }
-            //OracleType::Int64 is integer
             OracleType::Int64 => {
-                let a = row.str.as_ref().unwrap().clone().parse::<i32>()?;
-                return Ok(Value::I32(a));
+                let value = row
+                    .str
+                    .as_ref()
+                    .ok_or_else(|| Error::from(MISSING_STRING_VALUE))?;
+                value
+                    .parse::<i64>()
+                    .map(Value::I64)
+                    .map_err(|e| Error::from(e.to_string()))
             }
             OracleType::Float(p) => {
-                return if p >= 24 {
-                    let a = row.str.as_ref().unwrap().clone().parse::<f64>()?;
-                    Ok(Value::F64(a))
+                let value = row
+                    .str
+                    .as_ref()
+                    .ok_or_else(|| Error::from(MISSING_STRING_VALUE))?;
+                if p >= 24 {
+                    value
+                        .parse::<f64>()
+                        .map(Value::F64)
+                        .map_err(|e| Error::from(e.to_string()))
                 } else {
-                    let a = row.str.as_ref().unwrap().clone().parse::<f32>()?;
-                    Ok(Value::F32(a))
+                    value
+                        .parse::<f32>()
+                        .map(Value::F32)
+                        .map_err(|e| Error::from(e.to_string()))
                 }
             }
             OracleType::Date => {
-                let a = DateTime::from_str(&row.str.as_ref().unwrap().clone())?;
-                return Ok(Value::from(a));
+                let value = row
+                    .str
+                    .as_ref()
+                    .ok_or_else(|| Error::from(MISSING_STRING_VALUE))?;
+                DateTime::from_str(value)
+                    .map(Value::from)
+                    .map_err(|e| Error::from(e.to_string()))
             }
-            OracleType::BLOB => {
-                if let Some(a) = &row.bin{
-                    return Ok(Value::Binary(a.clone()));
-                }
-                return Ok(Value::Null);
+            OracleType::BLOB => Ok(row
+                .bin
+                .as_ref()
+                .map(|bin| Value::Binary((**bin).to_vec()))
+                .unwrap_or(Value::Null)),
+            OracleType::Long | OracleType::CLOB | OracleType::NCLOB => {
+                let value = row
+                    .str
+                    .as_ref()
+                    .ok_or_else(|| Error::from(MISSING_STRING_VALUE))?;
+                Ok(Value::String((**value).to_string()))
             }
-            OracleType::Long => {
-                return Ok(Value::String(row.str.as_ref().unwrap().clone()))
-            }
-            OracleType::CLOB => {
-                return Ok(Value::String(row.str.as_ref().unwrap().clone()))
-            }
-            OracleType::NCLOB => {
-                return Ok(Value::String(row.str.as_ref().unwrap().clone()))
-            }
-            //TODO: more types!
-            _ => {
-                if row.str.as_ref().is_some() {
-                    return Ok(Value::String(row.str.as_ref().unwrap().clone()))
-                }
-                return Err( Error::from("unimpl"));
-            },
-        };
+            _ => row
+                .str
+                .as_ref()
+                .map(|s| Value::String((**s).to_string()))
+                .ok_or_else(|| Error::from("unimpl")),
+        }
     }
 }

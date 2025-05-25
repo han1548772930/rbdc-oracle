@@ -11,75 +11,108 @@ pub trait Encode {
 
 impl Encode for Value {
     fn encode(self, idx: usize, statement: &mut Statement) -> Result<(), Error> {
-        let idx = idx + 1;//oracle is one-based
+        let idx = idx + 1; // Oracle 是基于 1 的索引
+
         match self {
-            Value::Ext(t, v) => match t {
+            Value::Ext(t, v) => match t.as_ref() {
                 "Date" => {
-                    let s = v.as_str().unwrap_or_default();
-                    let d = chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap();
-                    statement.bind(idx, &d).map_err(|e| e.to_string())?
+                    // 修复：使用 as_string() 而不是 as_str()
+                    let date_str = v.as_string().unwrap_or_default();
+                    let date = chrono::NaiveDate::parse_from_str(&date_str, "%Y-%m-%d")
+                        .map_err(|e| Error::from(e.to_string()))?;
+                    statement
+                        .bind(idx, &date.to_string())
+                        .map_err(|e| Error::from(e.to_string()))
                 }
                 "DateTime" => {
-                    let s = v.as_str().unwrap_or_default();
-                    let d = chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M:%S%z").unwrap();
-                    statement.bind(idx, &d).map_err(|e| e.to_string())?
+                    let datetime_str = v.as_string().unwrap_or_default();
+                    let datetime =
+                        chrono::NaiveDateTime::parse_from_str(&datetime_str, "%Y-%m-%dT%H:%M:%S")
+                            .map_err(|e| Error::from(e.to_string()))?;
+                    statement
+                        .bind(idx, &datetime.to_string())
+                        .map_err(|e| Error::from(e.to_string()))
                 }
                 "Time" => {
-                    //TODO: need to fix this
-                    let s = v.into_string().unwrap();
-                    statement.bind(idx, &s).map_err(|e| e.to_string())?
+                    let time_str = v.as_string().unwrap_or_default();
+                    statement
+                        .bind(idx, &time_str)
+                        .map_err(|e| Error::from(e.to_string()))
                 }
                 "Decimal" => {
-                    let d = BigDecimal::from_str(&v.into_string().unwrap_or_default()).unwrap().to_string();
-                    statement.bind(idx, &d).map_err(|e| e.to_string())?
-                }
-                "Json" => {
-                    return Err(Error::from("unimpl"));
+                    let decimal_str = v.as_string().unwrap_or_default();
+                    let decimal = BigDecimal::from_str(&decimal_str)
+                        .map_err(|e| Error::from(e.to_string()))?;
+                    statement
+                        .bind(idx, &decimal.to_string())
+                        .map_err(|e| Error::from(e.to_string()))
                 }
                 "Timestamp" => {
-                    let t = v.as_u64().unwrap_or_default() as i64;
-                    statement.bind(idx, &t).map_err(|e| e.to_string())?
+                    let timestamp = v.as_u64().unwrap_or_default() as i64;
+                    statement
+                        .bind(idx, &timestamp)
+                        .map_err(|e| Error::from(e.to_string()))
                 }
                 "Uuid" => {
-                    let d = v.into_string().unwrap();
-                    statement.bind(idx, &d).map_err(|e| e.to_string())?
+                    let uuid_str = v.as_string().unwrap_or_default();
+                    statement
+                        .bind(idx, &uuid_str)
+                        .map_err(|e| Error::from(e.to_string()))
                 }
-                _ => {
-                    return Err(Error::from("unimpl"));
-                }
-            }
-            Value::String(str) => {
-                statement.bind(idx, &str).map_err(|e| e.to_string())?
-            }
-            Value::U32(u) => {
-                statement.bind(idx, &u).map_err(|e| e.to_string())?
-            }
-            Value::U64(u) => {
-                statement.bind(idx, &u).map_err(|e| e.to_string())?
-            }
-            Value::I32(int) => {
-                statement.bind(idx, &int).map_err(|e| e.to_string())?
-            }
-            Value::I64(long) => {
-                statement.bind(idx, &long).map_err(|e| e.to_string())?
-            }
-            Value::F32(float) => {
-                statement.bind(idx, &float).map_err(|e| e.to_string())?
-            }
-            Value::F64(double) => {
-                statement.bind(idx, &double).map_err(|e| e.to_string())?
-            }
-            Value::Binary(bin) => {
-                statement.bind(idx, &bin).map_err(|e| e.to_string())?
-            }
+                "Json" => Err(Error::from("JSON type not implemented")),
+                _ => Err(Error::from("Unknown extended type")),
+            },
+            Value::String(s) => statement
+                .bind(idx, &s)
+                .map_err(|e| Error::from(e.to_string())),
+            Value::U32(u) => statement
+                .bind(idx, &u)
+                .map_err(|e| Error::from(e.to_string())),
+            Value::U64(u) => statement
+                .bind(idx, &u)
+                .map_err(|e| Error::from(e.to_string())),
+            Value::I32(i) => statement
+                .bind(idx, &i)
+                .map_err(|e| Error::from(e.to_string())),
+            Value::I64(i) => statement
+                .bind(idx, &i)
+                .map_err(|e| Error::from(e.to_string())),
+            Value::F32(f) => statement
+                .bind(idx, &f)
+                .map_err(|e| Error::from(e.to_string())),
+            Value::F64(f) => statement
+                .bind(idx, &f)
+                .map_err(|e| Error::from(e.to_string())),
+            Value::Binary(bin) => statement
+                .bind(idx, &bin)
+                .map_err(|e| Error::from(e.to_string())),
             Value::Null => {
-                statement.bind(idx, &Option::<String>::None).unwrap();
+                // 修复：使用 Option<String> 而不是 Option<&str>
+                let null_val: Option<String> = None;
+                statement
+                    .bind(idx, &null_val)
+                    .map_err(|e| Error::from(e.to_string()))
             }
-            //TODO: more types!
+            Value::Bool(b) => {
+                // 将布尔值转换为整数
+                let val = if b { 1i32 } else { 0i32 };
+                statement
+                    .bind(idx, &val)
+                    .map_err(|e| Error::from(e.to_string()))
+            }
+            Value::Array(_) => {
+                // 数组类型暂不支持，转换为字符串
+                let str_val = self.to_string();
+                statement
+                    .bind(idx, &str_val)
+                    .map_err(|e| Error::from(e.to_string()))
+            }
             _ => {
-                statement.bind(idx, &self.to_string()).map_err(|e| e.to_string())?
+                let str_val = self.to_string();
+                statement
+                    .bind(idx, &str_val)
+                    .map_err(|e| Error::from(e.to_string()))
             }
         }
-        Ok(())
     }
 }
