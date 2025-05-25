@@ -36,18 +36,26 @@ mod test {
     }
 }
 
-// 集成测试（需要数据库连接）
+// 更新测试代码
 #[cfg(test)]
 #[cfg(feature = "integration-tests")]
 mod integration_tests {
     use rbdc_oracle::{OracleConnectOptions, OracleConnection};
     use std::env;
 
+    fn load_env() {
+        dotenv::dotenv().ok();
+    }
+
     async fn get_test_connection() -> OracleConnection {
+        load_env();
+
         let connection_string = env::var("ORACLE_CONNECTION_STRING")
             .unwrap_or_else(|_| "//localhost:1521/XE".to_string());
-        let username = env::var("ORACLE_USERNAME").unwrap_or_else(|_| "testuser".to_string());
-        let password = env::var("ORACLE_PASSWORD").unwrap_or_else(|_| "testpass".to_string());
+        let username = env::var("ORACLE_USERNAME").unwrap_or_else(|_| "system".to_string());
+        let password = env::var("ORACLE_PASSWORD").unwrap_or_else(|_| "oracle".to_string());
+
+        println!("Connecting to Oracle: {}@{}", username, connection_string);
 
         let opts = OracleConnectOptions::new(&username, &password, &connection_string);
         OracleConnection::establish(&opts)
@@ -58,12 +66,27 @@ mod integration_tests {
     #[tokio::test]
     async fn test_connection() {
         let _conn = get_test_connection().await;
-        // 如果能建立连接就算成功
+        println!("✅ Oracle connection successful!");
     }
 
     #[tokio::test]
     async fn test_ping() {
         let mut conn = get_test_connection().await;
         conn.ping().await.expect("Ping failed");
+        println!("✅ Oracle ping successful!");
+    }
+
+    #[tokio::test]
+    async fn test_simple_query() {
+        let mut conn = get_test_connection().await;
+
+        // 测试简单查询
+        let rows = conn
+            .get_rows("SELECT 1 as test_col FROM DUAL", vec![])
+            .await
+            .expect("Query failed");
+
+        assert_eq!(rows.len(), 1);
+        println!("✅ Simple query test successful!");
     }
 }
