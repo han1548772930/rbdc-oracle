@@ -32,6 +32,9 @@ jobs:
           target
         key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
+    - name: Auto-format code
+      run: cargo fmt
+
     - name: Run unit tests
       run: cargo test test_exchange --verbose
 
@@ -44,25 +47,25 @@ jobs:
     - name: Check documentation
       run: cargo doc --no-deps --document-private-items
 
-  # 集成测试作业（需要 Oracle 数据库）
+  # 集成测试作业（需要 Oracle 11g 数据库）
   integration-tests:
-    name: Integration Tests
+    name: Integration Tests with Oracle 11g
     runs-on: ubuntu-latest
     
     services:
       oracle:
-        image: gvenzl/oracle-xe:21-slim
+        # 使用 Oracle 11g XE 镜像
+        image: wnameless/oracle-xe-11g-r2
         env:
-          ORACLE_PASSWORD: oracle
-          APP_USER: testuser
-          APP_USER_PASSWORD: testpass
+          ORACLE_ALLOW_REMOTE: true
         ports:
           - 1521:1521
         options: >-
-          --health-cmd healthcheck.sh
-          --health-interval 20s
+          --health-cmd "echo 'SELECT 1 FROM DUAL;' | sqlplus -S system/oracle@localhost:1521/XE"
+          --health-interval 30s
           --health-timeout 10s
-          --health-retries 10
+          --health-retries 15
+          --health-start-period 120s
 
     steps:
     - uses: actions/checkout@v4
@@ -79,16 +82,16 @@ jobs:
           target
         key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
-    - name: Install Oracle Instant Client
+    - name: Install Oracle 11g Instant Client
       run: |
-        # 下载 Oracle Instant Client
-        wget -q https://download.oracle.com/otn_software/linux/instantclient/2112000/instantclient-basic-linux.x64-21.12.0.0.0dbru.zip
-        wget -q https://download.oracle.com/otn_software/linux/instantclient/2112000/instantclient-devel-linux.x64-21.12.0.0.0dbru.zip
+        # 下载 Oracle 11g Instant Client
+        wget -q https://download.oracle.com/otn/linux/instantclient/11204/instantclient-basic-linux.x64-11.2.0.4.0.zip
+        wget -q https://download.oracle.com/otn/linux/instantclient/11204/instantclient-devel-linux.x64-11.2.0.4.0.zip
         
         # 解压并安装
-        unzip -q instantclient-basic-linux.x64-21.12.0.0.0dbru.zip
-        unzip -q instantclient-devel-linux.x64-21.12.0.0.0dbru.zip
-        sudo mv instantclient_21_12 /opt/oracle
+        unzip -q instantclient-basic-linux.x64-11.2.0.4.0.zip
+        unzip -q instantclient-devel-linux.x64-11.2.0.4.0.zip
+        sudo mv instantclient_11_2 /opt/oracle
         
         # 配置环境
         echo "/opt/oracle" | sudo tee /etc/ld.so.conf.d/oracle.conf
@@ -98,28 +101,46 @@ jobs:
         echo "LD_LIBRARY_PATH=/opt/oracle" >> $GITHUB_ENV
         echo "ORACLE_HOME=/opt/oracle" >> $GITHUB_ENV
 
-    - name: Wait for Oracle to be ready
+    - name: Wait for Oracle 11g to be ready
       run: |
-        echo "Waiting for Oracle database to start..."
-        timeout=300
+        echo "Waiting for Oracle 11g database to start..."
+        timeout=600  # Oracle 11g 启动较慢，增加超时时间
         elapsed=0
         
         while [ $elapsed -lt $timeout ]; do
           if nc -z localhost 1521; then
-            echo "Oracle port is open, waiting a bit more for full startup..."
-            sleep 30
-            echo "Oracle should be ready now!"
-            break
+            echo "Oracle port is open, checking database readiness..."
+            # 等待数据库完全启动
+            sleep 60
+            
+            # 测试连接
+            if docker exec $(docker ps -q --filter "ancestor=wnameless/oracle-xe-11g-r2") sh -c "echo 'SELECT 1 FROM DUAL;' | sqlplus -S system/oracle@localhost:1521/XE" > /dev/null 2>&1; then
+              echo "Oracle 11g is ready!"
+              break
+            fi
           fi
-          echo "Waiting for Oracle... ($elapsed/$timeout seconds)"
-          sleep 10
-          elapsed=$((elapsed + 10))
+          echo "Waiting for Oracle 11g... ($elapsed/$timeout seconds)"
+          sleep 15
+          elapsed=$((elapsed + 15))
         done
         
         if [ $elapsed -ge $timeout ]; then
-          echo "Timeout waiting for Oracle to start"
+          echo "Timeout waiting for Oracle 11g to start"
+          docker logs $(docker ps -q --filter "ancestor=wnameless/oracle-xe-11g-r2")
           exit 1
         fi
+
+    - name: Create test user
+      run: |
+        docker exec $(docker ps -q --filter "ancestor=wnameless/oracle-xe-11g-r2") sh -c "
+        echo \"
+        CREATE USER testuser IDENTIFIED BY testpass;
+        GRANT CONNECT, RESOURCE TO testuser;
+        GRANT CREATE SESSION TO testuser;
+        GRANT UNLIMITED TABLESPACE TO testuser;
+        EXIT;
+        \" | sqlplus -S system/oracle@localhost:1521/XE
+        "
 
     - name: Run integration tests
       run: cargo test --features integration-tests --verbose
@@ -151,29 +172,29 @@ jobs:
           target
         key: ${{ matrix.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
-    # Windows 特殊处理
-    - name: Install Oracle Instant Client (Windows)
+    # Windows 特殊处理 (Oracle 11g)
+    - name: Install Oracle 11g Instant Client (Windows)
       if: matrix.os == 'windows-latest'
       run: |
-        # 下载 Windows 版本的 Oracle Instant Client
-        curl -L -o instantclient-basic-windows.zip "https://download.oracle.com/otn_software/nt/instantclient/2112000/instantclient-basic-windows.x64-21.12.0.0.0dbru.zip"
-        Expand-Archive -Path instantclient-basic-windows.zip -DestinationPath C:\oracle
-        echo "C:\oracle\instantclient_21_12" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
+        # 下载 Windows 版本的 Oracle 11g Instant Client
+        curl -L -o instantclient-basic-windows-11g.zip "https://download.oracle.com/otn/nt/instantclient/11204/instantclient-basic-win32-11.2.0.4.0.zip"
+        Expand-Archive -Path instantclient-basic-windows-11g.zip -DestinationPath C:\oracle
+        echo "C:\oracle\instantclient_11_2" | Out-File -FilePath $env:GITHUB_PATH -Encoding utf8 -Append
 
     # macOS 特殊处理
-    - name: Install Oracle Instant Client (macOS)
+    - name: Install Oracle 11g Instant Client (macOS)
       if: matrix.os == 'macos-latest'
       run: |
-        # 对于 macOS，我们只测试编译
-        echo "macOS build test only (no Oracle client)"
+        # 对于 macOS，我们只测试编译（Oracle 11g 对 macOS 支持有限）
+        echo "macOS build test only (Oracle 11g has limited macOS support)"
 
-    # Linux 特殊处理
-    - name: Install Oracle Instant Client (Linux)
+    # Linux 特殊处理 (Oracle 11g)
+    - name: Install Oracle 11g Instant Client (Linux)
       if: matrix.os == 'ubuntu-latest'
       run: |
-        wget -q https://download.oracle.com/otn_software/linux/instantclient/2112000/instantclient-basic-linux.x64-21.12.0.0.0dbru.zip
-        unzip -q instantclient-basic-linux.x64-21.12.0.0.0dbru.zip
-        sudo mv instantclient_21_12 /opt/oracle
+        wget -q https://download.oracle.com/otn/linux/instantclient/11204/instantclient-basic-linux.x64-11.2.0.4.0.zip
+        unzip -q instantclient-basic-linux.x64-11.2.0.4.0.zip
+        sudo mv instantclient_11_2 /opt/oracle
         echo "/opt/oracle" | sudo tee /etc/ld.so.conf.d/oracle.conf
         sudo ldconfig
         echo "LD_LIBRARY_PATH=/opt/oracle" >> $GITHUB_ENV
@@ -183,3 +204,50 @@ jobs:
 
     - name: Run unit tests only
       run: cargo test test_exchange --verbose
+
+  # 可选：Oracle 11g 专用的性能测试
+  performance-test:
+    name: Performance Test with Oracle 11g
+    runs-on: ubuntu-latest
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    
+    services:
+      oracle:
+        image: wnameless/oracle-xe-11g-r2
+        env:
+          ORACLE_ALLOW_REMOTE: true
+        ports:
+          - 1521:1521
+        options: >-
+          --health-cmd "echo 'SELECT 1 FROM DUAL;' | sqlplus -S system/oracle@localhost:1521/XE"
+          --health-interval 30s
+          --health-timeout 10s
+          --health-retries 15
+          --health-start-period 120s
+
+    steps:
+    - uses: actions/checkout@v4
+    
+    - name: Install Rust
+      uses: dtolnay/rust-toolchain@stable
+
+    - name: Install Oracle 11g Instant Client
+      run: |
+        wget -q https://download.oracle.com/otn/linux/instantclient/11204/instantclient-basic-linux.x64-11.2.0.4.0.zip
+        unzip -q instantclient-basic-linux.x64-11.2.0.4.0.zip
+        sudo mv instantclient_11_2 /opt/oracle
+        echo "/opt/oracle" | sudo tee /etc/ld.so.conf.d/oracle.conf
+        sudo ldconfig
+        echo "LD_LIBRARY_PATH=/opt/oracle" >> $GITHUB_ENV
+
+    - name: Wait for Oracle 11g
+      run: |
+        echo "Waiting for Oracle 11g..."
+        sleep 180  # Oracle 11g 需要更长启动时间
+
+    - name: Run performance tests
+      run: cargo test --release --features integration-tests -- --nocapture
+      env:
+        ORACLE_CONNECTION_STRING: //localhost:1521/XE
+        ORACLE_USERNAME: system
+        ORACLE_PASSWORD: oracle
