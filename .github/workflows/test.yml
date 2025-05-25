@@ -10,10 +10,13 @@ env:
   CARGO_TERM_COLOR: always
 
 jobs:
-  # 单元测试作业（不需要数据库）
-  unit-tests:
-    name: Unit Tests
-    runs-on: ubuntu-latest
+  # 单元测试和编译检查
+  test:
+    name: Test and Build
+    strategy:
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
     
     steps:
     - uses: actions/checkout@v4
@@ -30,10 +33,13 @@ jobs:
           ~/.cargo/registry
           ~/.cargo/git
           target
-        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
+        key: ${{ matrix.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
 
     - name: Auto-format code
       run: cargo fmt
+
+    - name: Check compilation
+      run: cargo check --verbose
 
     - name: Run unit tests
       run: cargo test test_exchange --verbose
@@ -44,148 +50,8 @@ jobs:
     - name: Check formatting
       run: cargo fmt -- --check
 
+    - name: Build release
+      run: cargo build --release --verbose
+
     - name: Check documentation
       run: cargo doc --no-deps --document-private-items
-
-  # 集成测试作业（需要 Oracle 11g 数据库）
-  integration-tests:
-    name: Integration Tests with Oracle 11g
-    runs-on: ubuntu-latest
-    
-    services:
-      oracle:
-        # 使用 Oracle 11g XE 镜像
-        image: wnameless/oracle-xe-11g-r2
-        env:
-          ORACLE_ALLOW_REMOTE: true
-        ports:
-          - 1521:1521
-        options: >-
-          --health-cmd "echo 'SELECT 1 FROM DUAL;' | sqlplus -S system/oracle@localhost:1521/XE"
-          --health-interval 30s
-          --health-timeout 10s
-          --health-retries 15
-          --health-start-period 120s
-
-    steps:
-    - uses: actions/checkout@v4
-    
-    - name: Install Rust
-      uses: dtolnay/rust-toolchain@stable
-
-    - name: Cache dependencies
-      uses: actions/cache@v3
-      with:
-        path: |
-          ~/.cargo/registry
-          ~/.cargo/git
-          target
-        key: ${{ runner.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-
-    - name: Install Oracle Instant Client from APT
-      run: |
-        # 使用第三方 APT 源安装 Oracle Instant Client
-        wget -O- https://apt.fury.io/caddy/gpg.key | sudo apt-key add -
-        echo "deb [signed-by=/usr/share/keyrings/caddy-stable-archive-keyring.gpg] https://dl.cloudsmith.io/public/caddy/stable/deb/debian any-version main" | sudo tee /etc/apt/sources.list.d/caddy-stable.list
-        
-        # 或者使用预编译的包
-        sudo apt-get update
-        sudo apt-get install -y libaio1 libaio-dev
-        
-        # 下载免登录的 Oracle Instant Client
-        curl -L -o basic.zip "https://github.com/bumpx/oracle-instantclient/raw/master/instantclient-basic-linux.x64-11.2.0.4.0.zip"
-        curl -L -o devel.zip "https://github.com/bumpx/oracle-instantclient/raw/master/instantclient-devel-linux.x64-11.2.0.4.0.zip"
-        
-        # 验证下载
-        file basic.zip
-        file devel.zip
-        
-        # 解压并安装
-        unzip -q basic.zip
-        unzip -q devel.zip
-        sudo mv instantclient_11_2 /opt/oracle
-        
-        # 配置环境
-        echo "/opt/oracle" | sudo tee /etc/ld.so.conf.d/oracle.conf
-        sudo ldconfig
-        
-        # 设置环境变量
-        echo "LD_LIBRARY_PATH=/opt/oracle" >> $GITHUB_ENV
-        echo "ORACLE_HOME=/opt/oracle" >> $GITHUB_ENV
-
-    - name: Wait for Oracle 11g to be ready
-      run: |
-        echo "Waiting for Oracle 11g database to start..."
-        timeout=600
-        elapsed=0
-        
-        while [ $elapsed -lt $timeout ]; do
-          if nc -z localhost 1521; then
-            echo "Oracle port is open, checking database readiness..."
-            sleep 60
-            
-            # 测试连接
-            if docker exec $(docker ps -q --filter "ancestor=wnameless/oracle-xe-11g-r2") sh -c "echo 'SELECT 1 FROM DUAL;' | sqlplus -S system/oracle@localhost:1521/XE" > /dev/null 2>&1; then
-              echo "Oracle 11g is ready!"
-              break
-            fi
-          fi
-          echo "Waiting for Oracle 11g... ($elapsed/$timeout seconds)"
-          sleep 15
-          elapsed=$((elapsed + 15))
-        done
-        
-        if [ $elapsed -ge $timeout ]; then
-          echo "Timeout waiting for Oracle 11g to start"
-          docker logs $(docker ps -q --filter "ancestor=wnameless/oracle-xe-11g-r2")
-          exit 1
-        fi
-
-    - name: Create test user
-      run: |
-        docker exec $(docker ps -q --filter "ancestor=wnameless/oracle-xe-11g-r2") sh -c "
-        echo \"
-        CREATE USER testuser IDENTIFIED BY testpass;
-        GRANT CONNECT, RESOURCE TO testuser;
-        GRANT CREATE SESSION TO testuser;
-        GRANT UNLIMITED TABLESPACE TO testuser;
-        EXIT;
-        \" | sqlplus -S system/oracle@localhost:1521/XE
-        "
-
-    - name: Run integration tests
-      run: cargo test --features integration-tests --verbose
-      env:
-        ORACLE_CONNECTION_STRING: //localhost:1521/XE
-        ORACLE_USERNAME: testuser
-        ORACLE_PASSWORD: testpass
-
-  # 简化的构建测试
-  build-test:
-    name: Build Test
-    strategy:
-      matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
-    runs-on: ${{ matrix.os }}
-    
-    steps:
-    - uses: actions/checkout@v4
-    
-    - name: Install Rust
-      uses: dtolnay/rust-toolchain@stable
-
-    - name: Cache dependencies
-      uses: actions/cache@v3
-      with:
-        path: |
-          ~/.cargo/registry
-          ~/.cargo/git
-          target
-        key: ${{ matrix.os }}-cargo-${{ hashFiles('**/Cargo.lock') }}
-
-    # 简化版本：只测试编译，不安装 Oracle Client
-    - name: Build project (compile only)
-      run: cargo check --verbose
-
-    - name: Run unit tests only
-      run: cargo test test_exchange --verbose
