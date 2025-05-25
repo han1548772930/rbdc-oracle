@@ -1,10 +1,10 @@
-use std::sync::{Arc};
 use futures_core::future::BoxFuture;
 use oracle::sql_type::OracleType;
 use oracle::Connection as OraConnect;
 use rbdc::db::{Connection, ExecResult, Row};
 use rbdc::Error;
 use rbs::Value;
+use std::sync::Arc;
 use tokio::sync::RwLock; // 使用异步锁替代标准锁
 
 use crate::driver::OracleDriver;
@@ -27,7 +27,7 @@ struct BlockingTask<F, R> {
     _phantom: std::marker::PhantomData<R>,
 }
 
-impl<F, R> BlockingTask<F, R> 
+impl<F, R> BlockingTask<F, R>
 where
     F: FnOnce() -> Result<R, Error> + Send + 'static,
     R: Send + 'static,
@@ -38,7 +38,7 @@ where
             _phantom: std::marker::PhantomData,
         }
     }
-    
+
     async fn execute(self) -> Result<R, Error> {
         tokio::task::spawn_blocking(move || (self.task)())
             .await
@@ -60,13 +60,11 @@ impl Connection for OracleConnection {
     ) -> BoxFuture<Result<Vec<Box<dyn Row>>, Error>> {
         let sql: String = OracleDriver {}.pub_exchange(sql);
         let oc = self.clone();
-        
+
         // 优化：预处理参数，减少在 blocking 任务中的工作
         let processed_params: Vec<_> = params.into_iter().collect();
-        
-        let task = BlockingTask::new(move || {
-            Self::execute_query(&oc.conn, &sql, processed_params)
-        });
+
+        let task = BlockingTask::new(move || Self::execute_query(&oc.conn, &sql, processed_params));
 
         Box::pin(async move { task.execute().await })
     }
@@ -74,7 +72,7 @@ impl Connection for OracleConnection {
     fn exec(&mut self, sql: &str, params: Vec<Value>) -> BoxFuture<Result<ExecResult, Error>> {
         let oc = self.clone();
         let sql = sql.to_string();
-        
+
         Box::pin(async move {
             // 优化：对于简单的事务操作，避免 spawn_blocking
             match sql.as_str() {
@@ -99,16 +97,15 @@ impl Connection for OracleConnection {
                             last_insert_id: Value::Null,
                         })
                     });
-                    
+
                     let result = task.execute().await?;
                     let mut trans = oc.is_trans.write().await;
                     *trans = false;
                     Ok(result)
                 }
                 _ => {
-                    let task = BlockingTask::new(move || {
-                        Self::execute_statement(&oc, &sql, params)
-                    });
+                    let task =
+                        BlockingTask::new(move || Self::execute_statement(&oc, &sql, params));
                     task.execute().await
                 }
             }
@@ -141,22 +138,19 @@ impl OracleConnection {
         let task = BlockingTask::new({
             let opt = opt.clone();
             move || {
-                let conn = OraConnect::connect(
-                    opt.username,
-                    opt.password,
-                    opt.connect_string,
-                ).map_err(|e| Error::from(e.to_string()))?;
-                
+                let conn = OraConnect::connect(opt.username, opt.password, opt.connect_string)
+                    .map_err(|e| Error::from(e.to_string()))?;
+
                 Ok(OracleConnection {
                     conn: Arc::new(conn),
                     is_trans: Arc::new(RwLock::new(false)),
                 })
             }
         });
-        
+
         task.execute().await
     }
-    
+
     // 优化：将复杂逻辑提取到单独的方法中，减少闭包大小
     fn execute_query(
         conn: &Arc<OraConnect>,
@@ -205,29 +199,34 @@ impl OracleConnection {
         }
         Ok(results)
     }
-    
+
     fn execute_statement(
         oc: &OracleConnection,
         sql: &str,
         params: Vec<Value>,
     ) -> Result<ExecResult, Error> {
-        let processed_sql = OracleDriver {}.pub_exchange(sql);
+        // 只在需要时才进行 SQL 转换
+        let processed_sql = if sql.contains('?') {
+            OracleDriver {}.pub_exchange(sql)
+        } else {
+            sql.to_string()
+        };
+
         let builder = oc.conn.statement(&processed_sql);
         let mut stmt = map_oracle_error(builder.build())?;
 
-        for (idx, x) in params.into_iter().enumerate() {
-            x.encode(idx, &mut stmt)?;
+        if !params.is_empty() {
+            for (idx, x) in params.into_iter().enumerate() {
+                x.encode(idx, &mut stmt)?;
+            }
         }
 
         map_oracle_error(stmt.execute(&[]))?;
 
-        // 优化：避免重复的事务状态检查
-        let should_commit = {
-            // 这里可以考虑使用 try_read() 来避免阻塞
-            match oc.is_trans.try_read() {
-                Ok(trans) => !*trans,
-                Err(_) => false, // 如果锁竞争激烈，默认不提交
-            }
+        // 异步事务检查优化
+        let should_commit = match oc.is_trans.try_read() {
+            Ok(trans) => !*trans,
+            Err(_) => false,
         };
 
         if should_commit {
@@ -241,12 +240,9 @@ impl OracleConnection {
             last_insert_id: Value::Null,
         })
     }
-    
+
     // 优化：提取列数据处理逻辑
-    fn process_column_data(
-        col: &oracle::SqlValue,
-        t: OracleType,
-    ) -> Result<OracleData, Error> {
+    fn process_column_data(col: &oracle::SqlValue, t: OracleType) -> Result<OracleData, Error> {
         if let Ok(true) = col.is_null() {
             return Ok(OracleData {
                 str: None,
