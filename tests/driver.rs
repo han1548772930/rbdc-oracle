@@ -64,11 +64,27 @@ mod integration_tests {
 
         // 测试简单查询
         let rows = conn
-            .get_rows("SELECT 1 as test_col FROM DUAL", vec![])
+            .get_rows("select get_sysid('mes_map_detail') id from dual", vec![])
             .await
             .expect("Query failed");
 
         assert_eq!(rows.len(), 1);
+
+        // 获取具体的查询结果
+        if let Some(mut row) = rows.into_iter().next() {
+            // 获取第一列的值 (索引为0)
+            let id_value = row.get(0).expect("Failed to get column value");
+            println!("查询结果: {:?}", id_value);
+
+            // 根据 rbs::Value 的类型进行处理
+            match id_value {
+                rbs::Value::I32(val) => println!("ID 是 i32: {}", val),
+                rbs::Value::I64(val) => println!("ID 是 i64: {}", val),
+                rbs::Value::String(val) => println!("ID 是字符串: {}", val),
+                _ => println!("其他类型: {:?}", id_value),
+            }
+        }
+
         println!("✅ Simple query test successful!");
     }
 }
