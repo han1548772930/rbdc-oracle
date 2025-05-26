@@ -1,15 +1,22 @@
+use std::sync::{Arc, Mutex};
+
 use futures_core::future::BoxFuture;
 use oracle::sql_type::OracleType;
 use oracle::Connection as OraConnect;
 use rbdc::db::{Connection, ExecResult, Row};
 use rbdc::Error;
 use rbs::Value;
-use std::sync::{Arc, Mutex};
 
 use crate::driver::OracleDriver;
 use crate::encode::Encode;
 use crate::options::OracleConnectOptions;
 use crate::{OracleColumn, OracleData, OracleRow};
+
+// 添加辅助函数
+#[inline]
+fn map_oracle_error<T>(result: Result<T, oracle::Error>) -> Result<T, Error> {
+    result.map_err(|e| Error::from(e.to_string()))
+}
 
 #[derive(Clone)]
 pub struct OracleConnection {
@@ -30,81 +37,66 @@ impl Connection for OracleConnection {
             let mut stmt = builder.build().map_err(|e| Error::from(e.to_string()))?;
 
             for (idx, x) in params.into_iter().enumerate() {
-                x.encode(idx, &mut stmt)?;
+                x.encode(idx, &mut stmt)
+                    .map_err(|e| Error::from(e.to_string()))?
             }
 
             let rows = stmt.query(&[]).map_err(|e| Error::from(e.to_string()))?;
             let col_infos = rows.column_info();
             let col_count = col_infos.len();
-            let mut results = Vec::with_capacity(col_count);
+            let mut results = Vec::new();
             let mut columns = Vec::with_capacity(col_count);
-
             for info in col_infos.iter() {
                 columns.push(OracleColumn {
-                    name: info.name().to_string().to_lowercase().into(),
+                    name: info.name().to_string().to_lowercase(),
                     column_type: info.oracle_type().clone(),
-                });
+                })
             }
+
+            // 将 columns 移到 Arc 中，避免每次创建 OracleRow 时都克隆
+            let columns_arc = Arc::new(columns);
 
             for row_result in rows {
                 let row = row_result.map_err(|e| Error::from(e.to_string()))?;
                 let mut datas = Vec::with_capacity(col_count);
-
                 for col in row.sql_values().iter() {
-                    let t = col.oracle_type().map_err(|e| Error::from(e.to_string()))?;
-                    let t = t.clone();
+                    let t = col.oracle_type().map_err(|e| Error::from(e.to_string()))?.clone();
 
-                    if let Ok(true) = col.is_null() {
-                        datas.push(OracleData {
+                    let oracle_data = if let Ok(true) = col.is_null() {
+                        OracleData {
                             str: None,
                             bin: None,
-                            column_type: t.clone(),
+                            column_type: t,
                             is_sql_null: true,
-                        });
-                    } else {
-                        if t == OracleType::BLOB {
-                            match col.get::<Vec<u8>>() {
-                                Ok(bin) => datas.push(OracleData {
-                                    str: None,
-                                    bin: Some(bin.into()),
-                                    column_type: t.clone(),
-                                    is_sql_null: false,
-                                }),
-                                Err(_) => datas.push(OracleData {
-                                    str: None,
-                                    bin: None,
-                                    column_type: t.clone(),
-                                    is_sql_null: false,
-                                }),
-                            }
-                        } else {
-                            match col.get::<String>() {
-                                Ok(str_val) => datas.push(OracleData {
-                                    str: Some(str_val.into()),
-                                    bin: None,
-                                    column_type: t.clone(),
-                                    is_sql_null: false,
-                                }),
-                                Err(_) => datas.push(OracleData {
-                                    str: None,
-                                    bin: None,
-                                    column_type: t.clone(),
-                                    is_sql_null: false,
-                                }),
-                            }
                         }
-                    }
-                }
+                    } else if t == OracleType::BLOB {
+                        let bin = col.get::<Vec<u8>>().ok();
+                        OracleData {
+                            str: None,
+                            bin,
+                            column_type: t,
+                            is_sql_null: false,
+                        }
+                    } else {
+                        let str_val = col.get::<String>().ok();
+                        OracleData {
+                            str: str_val,
+                            bin: None,
+                            column_type: t,
+                            is_sql_null: false,
+                        }
+                    };
 
+                    datas.push(oracle_data);
+                }
                 let row = OracleRow {
-                    columns: Arc::new(columns.clone()),
-                    datas,
+                    columns: columns_arc.clone(),
+                    datas: datas,
                 };
                 results.push(Box::new(row) as Box<dyn Row>);
             }
             Ok(results)
         });
-
         Box::pin(async move { task.await.map_err(|e| Error::from(e.to_string()))? })
     }
 
@@ -113,7 +105,6 @@ impl Connection for OracleConnection {
         let sql = sql.to_string();
         let task = tokio::task::spawn_blocking(move || {
             let mut trans = oc.is_trans.lock().map_err(|e| Error::from(e.to_string()))?;
-
             if sql == "begin" {
                 *trans = true;
                 Ok(ExecResult {
@@ -121,14 +112,14 @@ impl Connection for OracleConnection {
                     last_insert_id: Value::Null,
                 })
             } else if sql == "commit" {
-                oc.conn.commit().map_err(|e| Error::from(e.to_string()))?;
+                oc.conn.commit().unwrap();
                 *trans = false;
                 Ok(ExecResult {
                     rows_affected: 0,
                     last_insert_id: Value::Null,
                 })
             } else if sql == "rollback" {
-                oc.conn.rollback().map_err(|e| Error::from(e.to_string()))?;
+                oc.conn.rollback().unwrap();
                 *trans = false;
                 Ok(ExecResult {
                     rows_affected: 0,
@@ -138,20 +129,17 @@ impl Connection for OracleConnection {
                 let sql: String = OracleDriver {}.pub_exchange(&sql);
                 let builder = oc.conn.statement(&sql);
                 let mut stmt = builder.build().map_err(|e| Error::from(e.to_string()))?;
-
                 for (idx, x) in params.into_iter().enumerate() {
-                    x.encode(idx, &mut stmt)?;
+                    x.encode(idx, &mut stmt)
+                        .map_err(|e| Error::from(e.to_string()))?
                 }
-
                 stmt.execute(&[]).map_err(|e| Error::from(e.to_string()))?;
-
                 if !*trans {
                     oc.conn.commit().map_err(|e| Error::from(e.to_string()))?;
+                    *trans = false;
                 }
-
                 let rows_affected = stmt.row_count().map_err(|e| Error::from(e.to_string()))?;
                 let mut ret = vec![];
-
                 for i in 1..=stmt.bind_count() {
                     let res: Result<String, _> = stmt.bind_value(i);
                     match res {
@@ -159,15 +147,13 @@ impl Connection for OracleConnection {
                         Err(_) => ret.push(Value::Null),
                     }
                 }
-
                 Ok(ExecResult {
                     rows_affected,
                     last_insert_id: Value::Array(ret),
                 })
             }
         });
-
-        Box::pin(async move { task.await.map_err(|e| Error::from(e.to_string()))? })
+        Box::pin(async { task.await.map_err(|e| Error::from(e.to_string()))? })
     }
 
     fn ping(&mut self) -> BoxFuture<Result<(), rbdc::Error>> {
@@ -176,8 +162,7 @@ impl Connection for OracleConnection {
             oc.conn.ping().map_err(|e| Error::from(e.to_string()))?;
             Ok(())
         });
-
-        Box::pin(async move { task.await.map_err(|e| Error::from(e.to_string()))? })
+        Box::pin(async { task.await.map_err(|e| Error::from(e.to_string()))? })
     }
 
     fn close(&mut self) -> BoxFuture<Result<(), rbdc::Error>> {
@@ -187,25 +172,21 @@ impl Connection for OracleConnection {
             oc.conn.close().map_err(|e| Error::from(e.to_string()))?;
             Ok(())
         });
-
-        Box::pin(async move { task.await.map_err(|e| Error::from(e.to_string()))? })
+        Box::pin(async { task.await.map_err(|e| Error::from(e.to_string()))? })
     }
 }
 
 impl OracleConnection {
     pub async fn establish(opt: &OracleConnectOptions) -> Result<Self, Error> {
-        let task = tokio::task::spawn_blocking({
-            let opt = opt.clone();
-            move || {
-                let conn = OraConnect::connect(opt.username, opt.password, opt.connect_string)
-                    .map_err(|e| Error::from(e.to_string()))?;
-                Ok(OracleConnection {
-                    conn: Arc::new(conn),
-                    is_trans: Arc::new(Mutex::new(false)),
-                })
-            }
-        });
-
-        task.await.map_err(|e| Error::from(e.to_string()))?
+        let conn = OraConnect::connect(
+            opt.username.clone(),
+            opt.password.clone(),
+            opt.connect_string.clone(),
+        )
+        .map_err(|e| Error::from(e.to_string()))?;
+        Ok(Self {
+            conn: Arc::new(conn),
+            is_trans: Arc::new(Mutex::new(false)),
+        })
     }
 }

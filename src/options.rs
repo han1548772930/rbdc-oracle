@@ -5,7 +5,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::connection::OracleConnection;
 
-#[derive(Serialize, Deserialize, Debug, Clone)]
+#[derive(Serialize, Deserialize, Debug)]
 pub struct OracleConnectOptions {
     pub username: String,
     pub password: String,
@@ -15,13 +15,15 @@ pub struct OracleConnectOptions {
 impl ConnectOptions for OracleConnectOptions {
     fn connect(&self) -> BoxFuture<Result<Box<dyn Connection>, Error>> {
         Box::pin(async move {
-            let v = OracleConnection::establish(self).await?;
+            let v = OracleConnection::establish(self)
+                .await
+                .map_err(|e| Error::from(e.to_string()))?;
             Ok(Box::new(v) as Box<dyn Connection>)
         })
     }
 
     fn set_uri(&mut self, url: &str) -> Result<(), Error> {
-        *self = OracleConnectOptions::from_json(url)?;
+        *self = OracleConnectOptions::from_str(url)?;
         Ok(())
     }
 }
@@ -37,15 +39,7 @@ impl Default for OracleConnectOptions {
 }
 
 impl OracleConnectOptions {
-    pub fn new(username: &str, password: &str, connect_string: &str) -> Self {
-        Self {
-            username: username.to_owned(),
-            password: password.to_owned(),
-            connect_string: connect_string.to_owned(),
-        }
-    }
-
-    pub fn from_json(s: &str) -> Result<Self, Error> {
+    pub fn from_str(s: &str) -> Result<Self, Error> {
         serde_json::from_str(s).map_err(|e| Error::from(e.to_string()))
     }
 }

@@ -1,22 +1,18 @@
-use crate::decode::Decode;
-use oracle::sql_type::OracleType;
-use rbdc::db::{MetaData, Row};
-use rbs::Value;
 use std::sync::Arc;
+use oracle::sql_type::OracleType;
+use rbdc::db::{Row, MetaData};
+use rbs::Value;
+use crate::decode::Decode;
 
-pub mod connection;
 pub mod decode;
 pub mod driver;
 pub mod encode;
 pub mod options;
-
-pub use connection::OracleConnection;
-pub use driver::OracleDriver;
-pub use options::OracleConnectOptions;
+pub mod connection;
 
 #[derive(Debug, Clone)]
 pub struct OracleColumn {
-    pub name: Arc<str>,
+    pub name: String,
     pub column_type: OracleType,
 }
 
@@ -39,11 +35,12 @@ impl MetaData for OracleMetaData {
 
 #[derive(Debug)]
 pub struct OracleData {
-    pub str: Option<Arc<str>>,  // 使用 Arc<str> 减少内存占用
-    pub bin: Option<Arc<[u8]>>, // 使用 Arc<[u8]> 减少内存占用
+    pub str: Option<String>,
+    pub bin: Option<Vec<u8>>,
     pub column_type: OracleType,
     pub is_sql_null: bool,
 }
+
 
 #[derive(Debug)]
 pub struct OracleRow {
@@ -51,22 +48,15 @@ pub struct OracleRow {
     pub datas: Vec<OracleData>,
 }
 
+
 impl Row for OracleRow {
     fn meta_data(&self) -> Box<dyn MetaData> {
         Box::new(OracleMetaData(self.columns.clone()))
     }
 
     fn get(&mut self, i: usize) -> Result<Value, rbdc::Error> {
-        self.get_safe(i)
-    }
-}
-
-impl OracleRow {
-    #[inline]
-    pub fn get_safe(&self, i: usize) -> Result<Value, rbdc::Error> {
-        self.datas
-            .get(i)
-            .ok_or_else(|| rbdc::Error::from("Index out of bounds"))
-            .and_then(Value::decode)
+        Value::decode(
+            &self.datas[i],
+        )
     }
 }
