@@ -236,12 +236,13 @@ impl OracleConnection {
         let rows_affected = map_oracle_error(stmt.row_count())?;
         let mut ret = vec![];
         for i in 1..=stmt.bind_count() {
-            let res: Result<String, _> = stmt.bind_value(i);
+            let res = map_oracle_error(stmt.bind_value(i));
             match res {
                 Ok(v) => ret.push(Value::String(v)),
                 Err(_) => ret.push(Value::Null),
             }
         }
+
         Ok(ExecResult {
             rows_affected,
             last_insert_id: Value::Array(ret),
