@@ -60,7 +60,7 @@ impl Connection for OracleConnection {
 
                 for (col_idx, col) in row.sql_values().iter().enumerate() {
                     // 直接使用预先获取的类型，避免clone
-                    let t = &column_types[col_idx];
+                    let t: &OracleType = &column_types[col_idx];
 
                     let oracle_data = if let Ok(true) = col.is_null() {
                         OracleData {
