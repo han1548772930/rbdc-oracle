@@ -12,12 +12,6 @@ use crate::encode::Encode;
 use crate::options::OracleConnectOptions;
 use crate::{OracleColumn, OracleData, OracleRow};
 
-// 添加辅助函数
-#[inline]
-fn map_oracle_error<T>(result: Result<T, oracle::Error>) -> Result<T, Error> {
-    result.map_err(|e| Error::from(e.to_string()))
-}
-
 #[derive(Clone)]
 pub struct OracleConnection {
     pub conn: Arc<OraConnect>,
@@ -46,35 +40,41 @@ impl Connection for OracleConnection {
             let col_count = col_infos.len();
             let mut results = Vec::new();
             let mut columns = Vec::with_capacity(col_count);
+
+            // 预先构建列类型映射，避免在循环中重复clone
+            let mut column_types = Vec::with_capacity(col_count);
             for info in col_infos.iter() {
+                let oracle_type = info.oracle_type().clone();
                 columns.push(OracleColumn {
                     name: info.name().to_string().to_lowercase(),
-                    column_type: info.oracle_type().clone(),
-                })
+                    column_type: oracle_type.clone(),
+                });
+                column_types.push(oracle_type);
             }
 
-            // 将 columns 移到 Arc 中，避免每次创建 OracleRow 时都克隆
             let columns_arc = Arc::new(columns);
 
             for row_result in rows {
                 let row = row_result.map_err(|e| Error::from(e.to_string()))?;
                 let mut datas = Vec::with_capacity(col_count);
-                for col in row.sql_values().iter() {
-                    let t = col.oracle_type().map_err(|e| Error::from(e.to_string()))?.clone();
+
+                for (col_idx, col) in row.sql_values().iter().enumerate() {
+                    // 直接使用预先获取的类型，避免clone
+                    let t = &column_types[col_idx];
 
                     let oracle_data = if let Ok(true) = col.is_null() {
                         OracleData {
                             str: None,
                             bin: None,
-                            column_type: t,
+                            column_type: t.clone(), // 只在这里clone一次
                             is_sql_null: true,
                         }
-                    } else if t == OracleType::BLOB {
+                    } else if *t == OracleType::BLOB {
                         let bin = col.get::<Vec<u8>>().ok();
                         OracleData {
                             str: None,
                             bin,
-                            column_type: t,
+                            column_type: t.clone(),
                             is_sql_null: false,
                         }
                     } else {
@@ -82,7 +82,7 @@ impl Connection for OracleConnection {
                         OracleData {
                             str: str_val,
                             bin: None,
-                            column_type: t,
+                            column_type: t.clone(),
                             is_sql_null: false,
                         }
                     };
@@ -91,7 +91,7 @@ impl Connection for OracleConnection {
                 }
                 let row = OracleRow {
                     columns: columns_arc.clone(),
-                    datas: datas,
+                    datas,
                 };
                 results.push(Box::new(row) as Box<dyn Row>);
             }
